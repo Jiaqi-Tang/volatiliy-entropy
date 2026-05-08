@@ -1,0 +1,9 @@
+# Virtual environment
+.venv/
+
+# Data
+data/intermediate/
+
+# Python
+__pycache__/
+.ipynb_checkpoints/
