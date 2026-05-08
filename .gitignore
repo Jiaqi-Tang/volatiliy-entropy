@@ -2,7 +2,7 @@
 .venv/
 
 # Data
-data/intermediate/
+data/intermediate/*.csv
 
 # Python
 __pycache__/

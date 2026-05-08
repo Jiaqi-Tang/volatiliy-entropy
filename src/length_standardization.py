@@ -1,0 +1,126 @@
+"""Standardize EUR/USD return-series length for dyadic decompositions."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+
+DEFAULT_K = 11
+BASE_INTERVAL_MINUTES = 5
+
+
+@dataclass(frozen=True)
+class LengthStandardizationPaths:
+    input_csv: Path = Path("data/intermediate/eurusd_5m_log_returns_clean.csv")
+    output_csv: Path = Path("data/final_analysis/eurusd_5m_log_returns_final.csv")
+    report_json: Path = Path("data/final_analysis/truncation_report.json")
+
+
+def standardize_length(
+    paths: LengthStandardizationPaths | None = None,
+    k: int = DEFAULT_K,
+) -> dict[str, Any]:
+    """Trim clean returns from the end so length is divisible by 2**k."""
+    paths = paths or LengthStandardizationPaths()
+    if k < 0:
+        raise ValueError("k must be non-negative")
+
+    data = pd.read_csv(paths.input_csv, parse_dates=["timestamp_utc", "previous_timestamp_utc"])
+    if data.empty:
+        raise ValueError(f"Input dataset is empty: {paths.input_csv}")
+    if "log_return" not in data.columns:
+        raise ValueError("Input dataset must contain a log_return column")
+
+    block_size = 2**k
+    input_rows = len(data)
+    truncated_rows = (input_rows // block_size) * block_size
+    if truncated_rows == 0:
+        raise ValueError(
+            f"Input rows ({input_rows}) are fewer than block size 2**{k} ({block_size})"
+        )
+
+    final = data.iloc[:truncated_rows].copy()
+    dropped_tail = data.iloc[truncated_rows:].copy()
+
+    paths.output_csv.parent.mkdir(parents=True, exist_ok=True)
+    final.to_csv(paths.output_csv, index=False)
+
+    returns = final["log_return"]
+    report = {
+        "input_csv": str(paths.input_csv),
+        "output_csv": str(paths.output_csv),
+        "K": k,
+        "block_size": block_size,
+        "base_interval_minutes": BASE_INTERVAL_MINUTES,
+        "block_span_minutes": block_size * BASE_INTERVAL_MINUTES,
+        "block_span_days": block_size * BASE_INTERVAL_MINUTES / (60 * 24),
+        "input_rows": int(input_rows),
+        "truncated_rows": int(truncated_rows),
+        "dropped_tail_rows": int(len(dropped_tail)),
+        "input_start_timestamp_utc": _iso_or_none(data["timestamp_utc"].iloc[0]),
+        "input_end_timestamp_utc": _iso_or_none(data["timestamp_utc"].iloc[-1]),
+        "truncated_start_timestamp_utc": _iso_or_none(final["timestamp_utc"].iloc[0]),
+        "truncated_end_timestamp_utc": _iso_or_none(final["timestamp_utc"].iloc[-1]),
+        "dropped_tail_start_timestamp_utc": _iso_or_none(
+            dropped_tail["timestamp_utc"].iloc[0] if not dropped_tail.empty else None
+        ),
+        "dropped_tail_end_timestamp_utc": _iso_or_none(
+            dropped_tail["timestamp_utc"].iloc[-1] if not dropped_tail.empty else None
+        ),
+        "mean_log_return": float(returns.mean()),
+        "variance_log_return": float(returns.var(ddof=0)),
+        "std_log_return": float(returns.std(ddof=0)),
+        "min_log_return": float(returns.min()),
+        "max_log_return": float(returns.max()),
+        "median_log_return": float(returns.median()),
+        "skewness_log_return": float(returns.skew()),
+        "kurtosis_log_return": float(returns.kurt()),
+    }
+
+    paths.report_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return report
+
+
+def _iso_or_none(value: Any) -> str | None:
+    if value is None or pd.isna(value):
+        return None
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, np.datetime64):
+        return pd.Timestamp(value).isoformat()
+    return str(value)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Trim clean EUR/USD 5m returns to a length divisible by 2**K."
+    )
+    parser.add_argument("--input-csv", type=Path, default=LengthStandardizationPaths.input_csv)
+    parser.add_argument("--output-csv", type=Path, default=LengthStandardizationPaths.output_csv)
+    parser.add_argument("--report-json", type=Path, default=LengthStandardizationPaths.report_json)
+    parser.add_argument("--k", type=int, default=DEFAULT_K)
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    report = standardize_length(
+        LengthStandardizationPaths(
+            input_csv=args.input_csv,
+            output_csv=args.output_csv,
+            report_json=args.report_json,
+        ),
+        k=args.k,
+    )
+    print(json.dumps(report, indent=2))
+
+
+if __name__ == "__main__":
+    main()
