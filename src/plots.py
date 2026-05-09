@@ -27,8 +27,10 @@ class PlotPaths:
     output_dir: Path = Path("plots/eda")
 
 
-def create_eda_plots(paths: PlotPaths | None = None) -> list[Path]:
+def create_eda_plots(paths: PlotPaths | None = None, max_acf_lag: int = 288) -> list[Path]:
     paths = paths or PlotPaths()
+    if max_acf_lag < 1:
+        raise ValueError("max_acf_lag must be at least 1")
     paths.output_dir.mkdir(parents=True, exist_ok=True)
 
     final_returns = _read_returns(paths.final_csv)
@@ -64,6 +66,24 @@ def create_eda_plots(paths: PlotPaths | None = None) -> list[Path]:
         plot_qq_against_zero_mean_gaussian(
             final_returns,
             paths.output_dir / "final_qq_gaussian.png",
+        ),
+        plot_acf_comparison(
+            final_returns,
+            shuffle_returns,
+            gaussian_returns,
+            paths.output_dir / "final_vs_baselines_returns_acf.png",
+            max_lag=max_acf_lag,
+            title="Autocorrelation of 5m Log Returns",
+            transform_label="returns",
+        ),
+        plot_acf_comparison(
+            np.abs(final_returns),
+            np.abs(shuffle_returns),
+            np.abs(gaussian_returns),
+            paths.output_dir / "final_vs_baselines_abs_returns_acf.png",
+            max_lag=max_acf_lag,
+            title="Autocorrelation of Absolute 5m Log Returns",
+            transform_label="absolute returns",
         ),
     ]
     return outputs
@@ -188,6 +208,52 @@ def plot_qq_against_zero_mean_gaussian(
     return output_path
 
 
+def plot_acf_comparison(
+    final_values: np.ndarray,
+    shuffle_values: np.ndarray,
+    gaussian_values: np.ndarray,
+    output_path: Path,
+    max_lag: int,
+    title: str,
+    transform_label: str,
+) -> Path:
+    final_acf = _autocorrelation(final_values, max_lag)
+    shuffle_acf = _autocorrelation(shuffle_values, max_lag)
+    gaussian_acf = _autocorrelation(gaussian_values, max_lag)
+    lags = np.arange(1, max_lag + 1)
+    band = 1.96 / np.sqrt(len(final_values))
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.plot(lags, final_acf, linewidth=1.2, label="EUR/USD final", color="#2f6f9f")
+    ax.plot(
+        lags,
+        shuffle_acf,
+        linewidth=1.0,
+        label="Shuffled baseline",
+        color="#5c9f52",
+        alpha=0.9,
+    )
+    ax.plot(
+        lags,
+        gaussian_acf,
+        linewidth=1.0,
+        label="Gaussian baseline",
+        color="#c76d3b",
+        alpha=0.9,
+    )
+    ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.8)
+    ax.axhline(band, color="black", linestyle="--", linewidth=0.8, alpha=0.5)
+    ax.axhline(-band, color="black", linestyle="--", linewidth=0.8, alpha=0.5)
+    ax.set_title(title)
+    ax.set_xlabel("Lag")
+    ax.set_ylabel(f"ACF of {transform_label}")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=180)
+    plt.close(fig)
+    return output_path
+
+
 def _read_returns(path: Path) -> np.ndarray:
     frame = pd.read_csv(path, usecols=["log_return"])
     if frame.empty:
@@ -214,3 +280,17 @@ def _ecdf(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     y = np.arange(1, len(x) + 1) / len(x)
     return x, y
 
+
+def _autocorrelation(values: np.ndarray, max_lag: int) -> np.ndarray:
+    if max_lag >= len(values):
+        raise ValueError("max_lag must be smaller than the series length")
+
+    centered = values.astype(float) - float(np.mean(values))
+    denom = float(np.dot(centered, centered))
+    if denom == 0.0:
+        raise ValueError("Cannot compute autocorrelation for a constant series")
+
+    acf = np.empty(max_lag, dtype=float)
+    for lag in range(1, max_lag + 1):
+        acf[lag - 1] = float(np.dot(centered[lag:], centered[:-lag]) / denom)
+    return acf

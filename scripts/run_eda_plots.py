@@ -29,6 +29,7 @@ def parse_args() -> argparse.Namespace:
         default=Path("data/final_analysis/baselines/eurusd_5m_log_returns_gaussian.csv"),
     )
     parser.add_argument("--output-dir", type=Path, default=Path("plots/eda"))
+    parser.add_argument("--max-acf-lag", type=int, default=288)
     return parser.parse_args()
 
 
@@ -40,7 +41,8 @@ def main() -> None:
             shuffle_csv=args.shuffle_csv,
             gaussian_csv=args.gaussian_csv,
             output_dir=args.output_dir,
-        )
+        ),
+        max_acf_lag=args.max_acf_lag,
     )
     for output in outputs:
         print(output)
