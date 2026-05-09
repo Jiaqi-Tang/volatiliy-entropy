@@ -14,6 +14,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from src.scale_utils import (
+    compress_component,
+    component_repeat_length,
+    decomposition_components,
+    original_lags_from_compressed_lags,
+)
+
 
 @dataclass(frozen=True)
 class PlotPaths:
@@ -360,7 +367,7 @@ def plot_decomposition_layers(
     title: str,
     k: int,
 ) -> Path:
-    layers = _decomposition_layers(k, include_original=True)
+    layers = decomposition_components(k, include_original=True)
     x = frame["index"].to_numpy()
 
     fig, axes = plt.subplots(
@@ -390,7 +397,7 @@ def plot_layer_histogram_grid(
     output_path: Path,
     k: int,
 ) -> Path:
-    layers = _decomposition_layers(k, include_original=False)
+    layers = decomposition_components(k, include_original=False)
     fig, axes = plt.subplots(3, 4, figsize=(20, 12))
     axes_flat = axes.ravel()
 
@@ -436,7 +443,7 @@ def plot_layer_qq_grid(
     k: int,
     quantile_points: int = 2_000,
 ) -> Path:
-    layers = _decomposition_layers(k, include_original=False)
+    layers = decomposition_components(k, include_original=False)
     probabilities = np.linspace(
         1.0 / (quantile_points + 1),
         quantile_points / (quantile_points + 1),
@@ -500,8 +507,7 @@ def plot_layer_acf_grid(
         final_values = final_frame[layer].to_numpy()
         shuffle_values = shuffle_frame[layer].to_numpy()
         gaussian_values = gaussian_frame[layer].to_numpy()
-        repeat_length = _layer_repeat_length(layer)
-        compressed_n = len(final_values[::repeat_length])
+        compressed_n = len(compress_component(final_values, layer))
         band = 1.96 / np.sqrt(compressed_n)
         if absolute:
             final_values = np.abs(final_values)
@@ -573,7 +579,7 @@ def _ecdf(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _read_decomposition(path: Path, k: int) -> pd.DataFrame:
-    columns = ["index", "original"] + _decomposition_layers(k, include_original=False)
+    columns = ["index", "original"] + decomposition_components(k, include_original=False)
     frame = pd.read_csv(path, usecols=columns)
     missing_columns = [column for column in columns if column not in frame.columns]
     if missing_columns:
@@ -581,20 +587,13 @@ def _read_decomposition(path: Path, k: int) -> pd.DataFrame:
     return frame
 
 
-def _decomposition_layers(k: int, include_original: bool) -> list[str]:
-    layers = [f"D_{scale:02d}" for scale in range(1, k + 1)] + [f"A_{k:02d}"]
-    if include_original:
-        return ["original", *layers]
-    return layers
-
-
 def _compressed_layer_autocorrelation(
     values: np.ndarray,
     layer: str,
     max_original_lag: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    repeat_length = _layer_repeat_length(layer)
-    compressed = values[::repeat_length]
+    repeat_length = component_repeat_length(layer)
+    compressed = compress_component(values, layer)
     max_compressed_lag = max_original_lag // repeat_length
     if max_compressed_lag < 1:
         raise ValueError(
@@ -603,18 +602,8 @@ def _compressed_layer_autocorrelation(
         )
     max_compressed_lag = min(max_compressed_lag, len(compressed) - 1)
     compressed_lags = np.arange(1, max_compressed_lag + 1)
-    original_lags = compressed_lags * repeat_length
+    original_lags = original_lags_from_compressed_lags(compressed_lags, layer)
     return original_lags, _autocorrelation(compressed, max_compressed_lag)
-
-
-def _layer_repeat_length(layer: str) -> int:
-    if layer.startswith("D_"):
-        scale = int(layer.split("_", maxsplit=1)[1])
-        return 2 ** (scale - 1)
-    if layer.startswith("A_"):
-        scale = int(layer.split("_", maxsplit=1)[1])
-        return 2**scale
-    return 1
 
 
 def _autocorrelation(values: np.ndarray, max_lag: int) -> np.ndarray:
