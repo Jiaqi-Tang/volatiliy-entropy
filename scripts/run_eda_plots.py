@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("data/baselines/eurusd_5m_log_returns_gaussian.csv"),
     )
-    parser.add_argument("--output-dir", type=Path, default=Path("plots/eda"))
+    parser.add_argument("--output-dir", type=Path, default=Path("plots/eda/returns"))
     parser.add_argument("--max-acf-lag", type=int, default=288)
     return parser.parse_args()
 

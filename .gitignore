@@ -3,6 +3,7 @@
 
 # Data
 data/intermediate/*.csv
+data/decomposition/*.csv
 
 # Python
 __pycache__/
