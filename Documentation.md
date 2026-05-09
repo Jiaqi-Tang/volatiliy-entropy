@@ -439,3 +439,116 @@ realized_population_std_log_return: 0.0002872155302260501
 min_log_return: -0.0015116429800731662
 max_log_return: 0.0013819795205624716
 ```
+
+---
+
+# Block-Average Multi-Scale Decomposition
+
+Objective: Decompose the final return series and baseline series into scale-indexed
+detail layers and a final approximation layer.
+
+## Design choices
+
+The decomposition is applied to:
+
+$$
+R^*,\quad R^{shuffle},\quad R^{BM}
+$$
+
+For each scale:
+
+$$
+k = 1,2,\ldots,K \quad \text{ with }\,K = 11
+$$
+
+the block size is:
+
+$$
+B_k = 2^k
+$$
+
+For each series:
+
+$$
+A_0 = R
+$$
+
+where $R$ denotes the input series being decomposed.
+
+The approximation layer $A_k$ is defined as the block-mean approximation of the
+original input series over consecutive non-overlapping blocks of size $B_k$.
+
+For each block:
+
+$$
+\mu_j^{(k)} = \frac{1}{B_k}\sum_{i \in block_j} A_{0,i}
+$$
+
+The block mean is expanded back across its block, so $A_k$ has the same length as
+the original series.
+
+The detail layer is:
+
+$$
+D_k = A_{k-1} - A_k
+$$
+
+The reconstruction identity is:
+
+$$
+R = A_K + \sum_{k=1}^{K}D_k
+$$
+
+The saved decomposition columns are:
+
+```text
+index
+timestamp_utc
+original
+D_01
+...
+D_11
+A_11
+```
+
+Only $D_1,\ldots,D_{11}$, $A_{11}$, and the original series are saved. Intermediate
+approximation layers $A_1,\ldots,A_{10}$ are computed internally but not exported.
+
+The decomposition outputs are:
+
+```text
+data/decomposition/final_decomposition.csv
+data/decomposition/shuffle_decomposition.csv
+data/decomposition/gaussian_decomposition.csv
+data/decomposition/decomposition_report.json
+```
+
+## Validation
+
+For each decomposed series, reconstruction error is computed as:
+
+$$
+\epsilon_i = original_i - \left(A_{11,i} + \sum_{k=1}^{11}D_{k,i}\right)
+$$
+
+The decomposition fails if:
+
+$$
+\max_i |\epsilon_i| > 10^{-12}
+$$
+
+All three decompositions reconstruct to machine precision.
+
+```text
+final:
+  max_abs_reconstruction_error: 3.469446951953614e-18
+  mean_abs_reconstruction_error: 2.2820538114180538e-20
+
+shuffle:
+  max_abs_reconstruction_error: 1.734723475976807e-18
+  mean_abs_reconstruction_error: 2.348456095110165e-20
+
+gaussian:
+  max_abs_reconstruction_error: 4.336808689942018e-19
+  mean_abs_reconstruction_error: 2.874568672696032e-20
+```
