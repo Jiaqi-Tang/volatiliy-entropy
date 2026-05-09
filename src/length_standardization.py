@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -97,30 +96,3 @@ def _iso_or_none(value: Any) -> str | None:
         return pd.Timestamp(value).isoformat()
     return str(value)
 
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Trim clean EUR/USD 5m returns to a length divisible by 2**K."
-    )
-    parser.add_argument("--input-csv", type=Path, default=LengthStandardizationPaths.input_csv)
-    parser.add_argument("--output-csv", type=Path, default=LengthStandardizationPaths.output_csv)
-    parser.add_argument("--report-json", type=Path, default=LengthStandardizationPaths.report_json)
-    parser.add_argument("--k", type=int, default=DEFAULT_K)
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
-    report = standardize_length(
-        LengthStandardizationPaths(
-            input_csv=args.input_csv,
-            output_csv=args.output_csv,
-            report_json=args.report_json,
-        ),
-        k=args.k,
-    )
-    print(json.dumps(report, indent=2))
-
-
-if __name__ == "__main__":
-    main()

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -108,27 +107,3 @@ def create_baselines(
     paths.report_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report
 
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Create shuffled and Gaussian baseline return series."
-    )
-    parser.add_argument("--input-csv", type=Path, default=BaselinePaths.input_csv)
-    parser.add_argument("--output-dir", type=Path, default=BaselinePaths.output_dir)
-    parser.add_argument("--shuffle-seed", type=int, default=SHUFFLE_SEED)
-    parser.add_argument("--gaussian-seed", type=int, default=GAUSSIAN_SEED)
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
-    report = create_baselines(
-        BaselinePaths(input_csv=args.input_csv, output_dir=args.output_dir),
-        shuffle_seed=args.shuffle_seed,
-        gaussian_seed=args.gaussian_seed,
-    )
-    print(json.dumps(report, indent=2))
-
-
-if __name__ == "__main__":
-    main()

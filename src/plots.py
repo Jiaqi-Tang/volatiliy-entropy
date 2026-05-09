@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import statistics
 from dataclasses import dataclass
 from pathlib import Path
@@ -215,31 +214,3 @@ def _ecdf(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     y = np.arange(1, len(x) + 1) / len(x)
     return x, y
 
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Create EDA plots for EUR/USD final returns and baselines."
-    )
-    parser.add_argument("--final-csv", type=Path, default=PlotPaths.final_csv)
-    parser.add_argument("--shuffle-csv", type=Path, default=PlotPaths.shuffle_csv)
-    parser.add_argument("--gaussian-csv", type=Path, default=PlotPaths.gaussian_csv)
-    parser.add_argument("--output-dir", type=Path, default=PlotPaths.output_dir)
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
-    outputs = create_eda_plots(
-        PlotPaths(
-            final_csv=args.final_csv,
-            shuffle_csv=args.shuffle_csv,
-            gaussian_csv=args.gaussian_csv,
-            output_dir=args.output_dir,
-        )
-    )
-    for output in outputs:
-        print(output)
-
-
-if __name__ == "__main__":
-    main()
