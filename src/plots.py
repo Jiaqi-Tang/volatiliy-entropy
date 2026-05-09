@@ -42,6 +42,12 @@ class DecompositionPlotPaths:
     output_dir: Path = Path("plots/eda/decomposition")
 
 
+@dataclass(frozen=True)
+class VolatilityPlotPaths:
+    volatility_csv: Path = Path("results/volatility/layer_volatility.csv")
+    output_dir: Path = Path("plots/results/volatility")
+
+
 def create_eda_plots(paths: PlotPaths | None = None, max_acf_lag: int = 288) -> list[Path]:
     paths = paths or PlotPaths()
     if max_acf_lag < 1:
@@ -192,6 +198,84 @@ def create_decomposition_plots(
             max_lag=long_max_acf_lag,
             absolute=True,
             title="Long-Scale Absolute Layer Autocorrelation",
+        ),
+    ]
+
+
+def create_volatility_plots(
+    paths: VolatilityPlotPaths | None = None,
+    k: int = 11,
+) -> list[Path]:
+    paths = paths or VolatilityPlotPaths()
+    if k < 1:
+        raise ValueError("k must be at least 1")
+    paths.output_dir.mkdir(parents=True, exist_ok=True)
+
+    frame = _read_volatility(paths.volatility_csv, k)
+
+    return [
+        plot_volatility_metric(
+            frame[frame["component_type"] == "detail"],
+            paths.output_dir / "detail_energy_share.png",
+            metric="detail_energy_share",
+            title="Detail Energy Share by Decomposition Component",
+            ylabel="Detail energy share",
+            k=k,
+            include_approximation=False,
+        ),
+        plot_volatility_metric(
+            frame,
+            paths.output_dir / "total_component_energy_share.png",
+            metric="total_component_energy_share",
+            title="Total Component Energy Share by Decomposition Component",
+            ylabel="Total component energy share",
+            k=k,
+            include_approximation=True,
+        ),
+        plot_volatility_metric(
+            frame,
+            paths.output_dir / "rms_volatility.png",
+            metric="rms_volatility",
+            title="RMS Volatility by Decomposition Component",
+            ylabel="RMS volatility",
+            k=k,
+            include_approximation=True,
+        ),
+        plot_volatility_metric(
+            frame,
+            paths.output_dir / "annualized_rms_volatility.png",
+            metric="annualized_rms_volatility",
+            title="Annualized RMS Volatility by Decomposition Component",
+            ylabel="Annualized RMS volatility",
+            k=k,
+            include_approximation=True,
+        ),
+        plot_volatility_difference_metric(
+            frame[frame["component_type"] == "detail"],
+            paths.output_dir / "detail_energy_share_difference.png",
+            metric="detail_energy_share",
+            title="Detail Energy Share Difference from Baselines",
+            ylabel="Final minus baseline",
+            k=k,
+            include_approximation=False,
+        ),
+        plot_volatility_difference_metric(
+            frame,
+            paths.output_dir / "total_component_energy_share_difference.png",
+            metric="total_component_energy_share",
+            title="Total Component Energy Share Difference from Baselines",
+            ylabel="Final minus baseline",
+            k=k,
+            include_approximation=True,
+        ),
+        plot_volatility_difference_metric(
+            frame,
+            paths.output_dir / "rms_volatility_difference.png",
+            metric="rms_volatility",
+            title="RMS Volatility Difference from Baselines",
+            ylabel="Final minus baseline",
+            k=k,
+            include_approximation=True,
         ),
     ]
 
@@ -354,6 +438,109 @@ def plot_acf_comparison(
     ax.set_title(title)
     ax.set_xlabel("Lag")
     ax.set_ylabel(f"ACF of {transform_label}")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=180)
+    plt.close(fig)
+    return output_path
+
+
+def plot_volatility_metric(
+    frame: pd.DataFrame,
+    output_path: Path,
+    metric: str,
+    title: str,
+    ylabel: str,
+    k: int,
+    include_approximation: bool,
+) -> Path:
+    components = [f"D_{scale:02d}" for scale in range(1, k + 1)]
+    if include_approximation:
+        components.append(f"A_{k:02d}")
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    colors = {
+        "final": "#2f6f9f",
+        "shuffle": "#5c9f52",
+        "gaussian": "#c76d3b",
+    }
+
+    for series in ["final", "shuffle", "gaussian"]:
+        series_frame = (
+            frame[frame["series"] == series]
+            .set_index("component")
+            .reindex(components)
+        )
+        if series_frame[metric].isna().any():
+            missing = series_frame[series_frame[metric].isna()].index.tolist()
+            raise ValueError(f"Missing {metric} values for {series}: {missing}")
+        ax.plot(
+            components,
+            series_frame[metric].astype(float).to_numpy(),
+            marker="o",
+            linewidth=1.7,
+            markersize=4.5,
+            label=series,
+            color=colors[series],
+        )
+
+    ax.set_title(title)
+    ax.set_xlabel("Component")
+    ax.set_ylabel(ylabel)
+    ax.grid(axis="y", alpha=0.25)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=180)
+    plt.close(fig)
+    return output_path
+
+
+def plot_volatility_difference_metric(
+    frame: pd.DataFrame,
+    output_path: Path,
+    metric: str,
+    title: str,
+    ylabel: str,
+    k: int,
+    include_approximation: bool,
+) -> Path:
+    components = [f"D_{scale:02d}" for scale in range(1, k + 1)]
+    if include_approximation:
+        components.append(f"A_{k:02d}")
+
+    wide = frame.pivot(index="component", columns="series", values=metric).reindex(components)
+    required_series = ["final", "shuffle", "gaussian"]
+    missing_series = [series for series in required_series if series not in wide.columns]
+    if missing_series:
+        raise ValueError(f"Missing series for {metric}: {missing_series}")
+    if wide[required_series].isna().any().any():
+        missing_components = wide[wide[required_series].isna().any(axis=1)].index.tolist()
+        raise ValueError(f"Missing {metric} values for components: {missing_components}")
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.plot(
+        components,
+        (wide["final"] - wide["shuffle"]).astype(float).to_numpy(),
+        marker="o",
+        linewidth=1.7,
+        markersize=4.5,
+        label="final - shuffle",
+        color="#5c9f52",
+    )
+    ax.plot(
+        components,
+        (wide["final"] - wide["gaussian"]).astype(float).to_numpy(),
+        marker="o",
+        linewidth=1.7,
+        markersize=4.5,
+        label="final - gaussian",
+        color="#c76d3b",
+    )
+    ax.axhline(0.0, color="black", linewidth=0.9, alpha=0.8)
+    ax.set_title(title)
+    ax.set_xlabel("Component")
+    ax.set_ylabel(ylabel)
+    ax.grid(axis="y", alpha=0.25)
     ax.legend()
     fig.tight_layout()
     fig.savefig(output_path, dpi=180)
@@ -584,6 +771,27 @@ def _read_decomposition(path: Path, k: int) -> pd.DataFrame:
     missing_columns = [column for column in columns if column not in frame.columns]
     if missing_columns:
         raise ValueError(f"Missing decomposition columns in {path}: {missing_columns}")
+    return frame
+
+
+def _read_volatility(path: Path, k: int) -> pd.DataFrame:
+    frame = pd.read_csv(path)
+    required_columns = {
+        "series",
+        "component",
+        "component_type",
+        "detail_energy_share",
+        "total_component_energy_share",
+        "rms_volatility",
+        "annualized_rms_volatility",
+    }
+    missing_columns = sorted(required_columns.difference(frame.columns))
+    if missing_columns:
+        raise ValueError(f"Missing volatility columns in {path}: {missing_columns}")
+    expected_components = set(decomposition_components(k, include_original=False))
+    unexpected_components = sorted(set(frame["component"]).difference(expected_components))
+    if unexpected_components:
+        raise ValueError(f"Unexpected volatility components in {path}: {unexpected_components}")
     return frame
 
 
