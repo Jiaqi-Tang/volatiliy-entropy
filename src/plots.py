@@ -48,6 +48,13 @@ class VolatilityPlotPaths:
     output_dir: Path = Path("plots/results/volatility")
 
 
+@dataclass(frozen=True)
+class EntropyPlotPaths:
+    layer_entropy_csv: Path = Path("results/entropy/layer_entropy.csv")
+    entropy_gaps_csv: Path = Path("results/entropy/entropy_gaps.csv")
+    output_dir: Path = Path("plots/results/entropy")
+
+
 def create_eda_plots(paths: PlotPaths | None = None, max_acf_lag: int = 288) -> list[Path]:
     paths = paths or PlotPaths()
     if max_acf_lag < 1:
@@ -198,6 +205,43 @@ def create_decomposition_plots(
             max_lag=long_max_acf_lag,
             absolute=True,
             title="Long-Scale Absolute Layer Autocorrelation",
+        ),
+    ]
+
+
+def create_entropy_plots(
+    paths: EntropyPlotPaths | None = None,
+    k: int = 11,
+) -> list[Path]:
+    paths = paths or EntropyPlotPaths()
+    if k < 1:
+        raise ValueError("k must be at least 1")
+    paths.output_dir.mkdir(parents=True, exist_ok=True)
+
+    layer_entropy = _read_layer_entropy(paths.layer_entropy_csv, k)
+    entropy_gaps = _read_entropy_gaps(paths.entropy_gaps_csv, k)
+
+    return [
+        plot_entropy_metric(
+            layer_entropy,
+            paths.output_dir / "permutation_entropy.png",
+            metric="permutation_entropy",
+            title="Permutation Entropy by Decomposition Component",
+            ylabel="Permutation entropy",
+            k=k,
+        ),
+        plot_entropy_metric(
+            layer_entropy,
+            paths.output_dir / "normalized_entropy.png",
+            metric="normalized_entropy",
+            title="Normalized Permutation Entropy by Decomposition Component",
+            ylabel="Normalized entropy",
+            k=k,
+        ),
+        plot_entropy_gaps(
+            entropy_gaps,
+            paths.output_dir / "entropy_gaps.png",
+            k=k,
         ),
     ]
 
@@ -438,6 +482,96 @@ def plot_acf_comparison(
     ax.set_title(title)
     ax.set_xlabel("Lag")
     ax.set_ylabel(f"ACF of {transform_label}")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=180)
+    plt.close(fig)
+    return output_path
+
+
+def plot_entropy_metric(
+    frame: pd.DataFrame,
+    output_path: Path,
+    metric: str,
+    title: str,
+    ylabel: str,
+    k: int,
+) -> Path:
+    components = decomposition_components(k, include_original=False)
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    colors = {
+        "final": "#2f6f9f",
+        "shuffle": "#5c9f52",
+        "gaussian": "#c76d3b",
+    }
+
+    for series in ["final", "shuffle", "gaussian"]:
+        series_frame = (
+            frame[frame["series"] == series]
+            .set_index("component")
+            .reindex(components)
+        )
+        if series_frame[metric].isna().any():
+            missing = series_frame[series_frame[metric].isna()].index.tolist()
+            raise ValueError(f"Missing {metric} values for {series}: {missing}")
+        ax.plot(
+            components,
+            series_frame[metric].astype(float).to_numpy(),
+            marker="o",
+            linewidth=1.7,
+            markersize=4.5,
+            label=series,
+            color=colors[series],
+        )
+
+    ax.set_title(title)
+    ax.set_xlabel("Component")
+    ax.set_ylabel(ylabel)
+    ax.grid(axis="y", alpha=0.25)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=180)
+    plt.close(fig)
+    return output_path
+
+
+def plot_entropy_gaps(
+    frame: pd.DataFrame,
+    output_path: Path,
+    k: int,
+) -> Path:
+    components = decomposition_components(k, include_original=False)
+    ordered = frame.set_index("component").reindex(components)
+    gap_columns = ["entropy_gap_shuffle", "entropy_gap_gaussian"]
+    if ordered[gap_columns].isna().any().any():
+        missing = ordered[ordered[gap_columns].isna().any(axis=1)].index.tolist()
+        raise ValueError(f"Missing entropy gap values for components: {missing}")
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.plot(
+        components,
+        ordered["entropy_gap_shuffle"].astype(float).to_numpy(),
+        marker="o",
+        linewidth=1.7,
+        markersize=4.5,
+        label="shuffle - final",
+        color="#5c9f52",
+    )
+    ax.plot(
+        components,
+        ordered["entropy_gap_gaussian"].astype(float).to_numpy(),
+        marker="o",
+        linewidth=1.7,
+        markersize=4.5,
+        label="gaussian - final",
+        color="#c76d3b",
+    )
+    ax.axhline(0.0, color="black", linewidth=0.9, alpha=0.8)
+    ax.set_title("Normalized Entropy Gaps from Baselines")
+    ax.set_xlabel("Component")
+    ax.set_ylabel("Baseline minus final normalized entropy")
+    ax.grid(axis="y", alpha=0.25)
     ax.legend()
     fig.tight_layout()
     fig.savefig(output_path, dpi=180)
@@ -793,6 +927,42 @@ def _read_volatility(path: Path, k: int) -> pd.DataFrame:
     if unexpected_components:
         raise ValueError(f"Unexpected volatility components in {path}: {unexpected_components}")
     return frame
+
+
+def _read_layer_entropy(path: Path, k: int) -> pd.DataFrame:
+    frame = pd.read_csv(path)
+    required_columns = {
+        "series",
+        "component",
+        "permutation_entropy",
+        "normalized_entropy",
+    }
+    missing_columns = sorted(required_columns.difference(frame.columns))
+    if missing_columns:
+        raise ValueError(f"Missing entropy columns in {path}: {missing_columns}")
+    _validate_components(frame, path, k)
+    return frame
+
+
+def _read_entropy_gaps(path: Path, k: int) -> pd.DataFrame:
+    frame = pd.read_csv(path)
+    required_columns = {
+        "component",
+        "entropy_gap_shuffle",
+        "entropy_gap_gaussian",
+    }
+    missing_columns = sorted(required_columns.difference(frame.columns))
+    if missing_columns:
+        raise ValueError(f"Missing entropy gap columns in {path}: {missing_columns}")
+    _validate_components(frame, path, k)
+    return frame
+
+
+def _validate_components(frame: pd.DataFrame, path: Path, k: int) -> None:
+    expected_components = set(decomposition_components(k, include_original=False))
+    unexpected_components = sorted(set(frame["component"]).difference(expected_components))
+    if unexpected_components:
+        raise ValueError(f"Unexpected components in {path}: {unexpected_components}")
 
 
 def _compressed_layer_autocorrelation(
