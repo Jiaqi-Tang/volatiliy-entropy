@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import math
 import re
 from dataclasses import dataclass
 from datetime import timezone, timedelta
@@ -12,6 +10,18 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+
+from src.globals.columns import LOG_RETURN, PREVIOUS_TIMESTAMP_UTC, TIMESTAMP_UTC
+from src.globals.paths import (
+    CLEAN_1M_CSV,
+    CLEAN_RETURNS_CSV,
+    INTERMEDIATE_DIR,
+    OHLC_5M_CSV,
+    PREPROCESSING_REPORT_JSON,
+    RAW_METATRADER_DIR,
+)
+from src.utils.json_utils import json_scalar, write_json
+from src.utils.time_utils import iso_or_none
 
 
 RAW_COLUMNS = ["date", "time", "open", "high", "low", "close", "volume"]
@@ -22,24 +32,32 @@ UTC = timezone.utc
 
 @dataclass(frozen=True)
 class PreprocessingPaths:
-    raw_dir: Path = Path("data/raw/metatrader")
-    intermediate_dir: Path = Path("data/intermediate")
+    raw_dir: Path = RAW_METATRADER_DIR
+    intermediate_dir: Path = INTERMEDIATE_DIR
 
     @property
     def clean_1m_csv(self) -> Path:
-        return self.intermediate_dir / "eurusd_1m_utc_clean.csv"
+        return CLEAN_1M_CSV if self.intermediate_dir == INTERMEDIATE_DIR else (
+            self.intermediate_dir / CLEAN_1M_CSV.name
+        )
 
     @property
     def ohlc_5m_csv(self) -> Path:
-        return self.intermediate_dir / "eurusd_5m_ohlc_utc_nonempty.csv"
+        return OHLC_5M_CSV if self.intermediate_dir == INTERMEDIATE_DIR else (
+            self.intermediate_dir / OHLC_5M_CSV.name
+        )
 
     @property
     def report_json(self) -> Path:
-        return self.intermediate_dir / "preprocessing_report.json"
+        return PREPROCESSING_REPORT_JSON if self.intermediate_dir == INTERMEDIATE_DIR else (
+            self.intermediate_dir / PREPROCESSING_REPORT_JSON.name
+        )
 
     @property
     def clean_returns_csv(self) -> Path:
-        return self.intermediate_dir / "eurusd_5m_log_returns_clean.csv"
+        return CLEAN_RETURNS_CSV if self.intermediate_dir == INTERMEDIATE_DIR else (
+            self.intermediate_dir / CLEAN_RETURNS_CSV.name
+        )
 
 
 def discover_raw_csvs(raw_dir: Path) -> list[Path]:
@@ -109,13 +127,13 @@ def clean_1m(raw: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
             f"Examples: {differing_duplicate_timestamps[:5]}"
         )
 
-    clean["timestamp_utc"] = (
+    clean[TIMESTAMP_UTC] = (
         clean["timestamp_raw"].dt.tz_localize(FIXED_EST).dt.tz_convert(UTC)
     )
-    clean = clean.sort_values("timestamp_utc").reset_index(drop=True)
+    clean = clean.sort_values(TIMESTAMP_UTC).reset_index(drop=True)
 
     output_columns = [
-        "timestamp_utc",
+        TIMESTAMP_UTC,
         "open",
         "high",
         "low",
@@ -128,8 +146,8 @@ def clean_1m(raw: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
     report = {
         "raw_exact_duplicate_rows_dropped": exact_duplicates,
         "clean_1m_rows": int(len(clean)),
-        "clean_1m_first_timestamp_utc": _iso_or_none(clean["timestamp_utc"].min()),
-        "clean_1m_last_timestamp_utc": _iso_or_none(clean["timestamp_utc"].max()),
+        "clean_1m_first_timestamp_utc": iso_or_none(clean[TIMESTAMP_UTC].min()),
+        "clean_1m_last_timestamp_utc": iso_or_none(clean[TIMESTAMP_UTC].max()),
     }
     return clean, report
 
@@ -157,7 +175,7 @@ def _find_differing_duplicate_timestamps(frame: pd.DataFrame) -> list[dict[str, 
 
 
 def build_5m_ohlc(clean_1m_frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
-    indexed = clean_1m_frame.set_index("timestamp_utc").sort_index()
+    indexed = clean_1m_frame.set_index(TIMESTAMP_UTC).sort_index()
     grouped = indexed.resample("5min", label="left", closed="left")
 
     ohlc = grouped.agg(
@@ -177,26 +195,26 @@ def build_5m_ohlc(clean_1m_frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str,
         "ohlc_5m_complete_rows": int(ohlc["complete"].sum()),
         "ohlc_5m_partial_rows": int((~ohlc["complete"]).sum()),
         "ohlc_5m_n_m1_counts": _int_key_counts(ohlc["n_m1"]),
-        "ohlc_5m_first_timestamp_utc": _iso_or_none(ohlc["timestamp_utc"].min()),
-        "ohlc_5m_last_timestamp_utc": _iso_or_none(ohlc["timestamp_utc"].max()),
+        "ohlc_5m_first_timestamp_utc": iso_or_none(ohlc[TIMESTAMP_UTC].min()),
+        "ohlc_5m_last_timestamp_utc": iso_or_none(ohlc[TIMESTAMP_UTC].max()),
     }
     return ohlc, report
 
 
 def build_clean_returns(ohlc_5m: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
-    returns = ohlc_5m[["timestamp_utc", "close", "n_m1"]].copy()
-    returns = returns.sort_values("timestamp_utc").reset_index(drop=True)
-    returns["previous_timestamp_utc"] = returns["timestamp_utc"].shift(1)
+    returns = ohlc_5m[[TIMESTAMP_UTC, "close", "n_m1"]].copy()
+    returns = returns.sort_values(TIMESTAMP_UTC).reset_index(drop=True)
+    returns[PREVIOUS_TIMESTAMP_UTC] = returns[TIMESTAMP_UTC].shift(1)
     returns["previous_close"] = returns["close"].shift(1)
     returns["delta_minutes"] = (
-        (returns["timestamp_utc"] - returns["previous_timestamp_utc"])
+        (returns[TIMESTAMP_UTC] - returns[PREVIOUS_TIMESTAMP_UTC])
         .dt.total_seconds()
         .div(60)
     )
-    returns["log_return"] = np.log(
+    returns[LOG_RETURN] = np.log(
         returns["close"]) - np.log(returns["previous_close"])
     returns = returns.dropna(
-        subset=["previous_timestamp_utc", "previous_close", "delta_minutes"])
+        subset=[PREVIOUS_TIMESTAMP_UTC, "previous_close", "delta_minutes"])
 
     clean_mask = returns["delta_minutes"].eq(5)
     clean_returns = returns.loc[clean_mask].copy()
@@ -207,10 +225,10 @@ def build_clean_returns(ohlc_5m: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, 
         int)
 
     clean_columns = [
-        "timestamp_utc",
+        TIMESTAMP_UTC,
         "close",
-        "log_return",
-        "previous_timestamp_utc",
+        LOG_RETURN,
+        PREVIOUS_TIMESTAMP_UTC,
         "previous_close",
         "delta_minutes",
         "n_m1",
@@ -260,8 +278,7 @@ def run_preprocessing(paths: PreprocessingPaths | None = None) -> dict[str, Any]
         "clean_returns_csv": str(paths.clean_returns_csv),
         "report_json": str(paths.report_json),
     }
-    paths.report_json.write_text(json.dumps(
-        report, indent=2), encoding="utf-8")
+    write_json(paths.report_json, report)
     return report
 
 
@@ -282,13 +299,13 @@ def _dropped_returns_for_report(dropped: pd.DataFrame) -> list[dict[str, Any]]:
     )
     rows = rows[
         [
-            "timestamp_utc",
-            "previous_timestamp_utc",
+            TIMESTAMP_UTC,
+            PREVIOUS_TIMESTAMP_UTC,
             "delta_minutes",
             "missing_5m_bars",
             "close",
             "previous_close",
-            "log_return",
+            LOG_RETURN,
             "n_m1",
         ]
     ]
@@ -297,28 +314,8 @@ def _dropped_returns_for_report(dropped: pd.DataFrame) -> list[dict[str, Any]]:
     for record in rows.to_dict("records"):
         records.append(
             {
-                key: _json_scalar(value)
+                key: json_scalar(value)
                 for key, value in record.items()
             }
         )
     return records
-
-
-def _json_scalar(value: Any) -> Any:
-    if isinstance(value, pd.Timestamp):
-        return value.isoformat()
-    if isinstance(value, np.integer):
-        return int(value)
-    if isinstance(value, np.floating):
-        return float(value)
-    if isinstance(value, float) and math.isnan(value):
-        return None
-    return value
-
-
-def _iso_or_none(value: Any) -> str | None:
-    if pd.isna(value):
-        return None
-    if isinstance(value, pd.Timestamp):
-        return value.isoformat()
-    return str(value)

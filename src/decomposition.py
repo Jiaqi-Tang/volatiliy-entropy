@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,9 +9,22 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from src.globals.columns import INDEX, LOG_RETURN, ORIGINAL, TIMESTAMP_UTC
+from src.globals.constants import BASE_INTERVAL_MINUTES, DEFAULT_K
+from src.globals.paths import (
+    DECOMPOSITION_DIR,
+    DECOMPOSITION_REPORT_JSON,
+    FINAL_DECOMPOSITION_CSV,
+    FINAL_RETURNS_CSV,
+    GAUSSIAN_DECOMPOSITION_CSV,
+    GAUSSIAN_RETURNS_CSV,
+    SHUFFLE_DECOMPOSITION_CSV,
+    SHUFFLE_RETURNS_CSV,
+)
+from src.globals.series import SERIES_FINAL, SERIES_GAUSSIAN, SERIES_SHUFFLE
+from src.utils.json_utils import write_json
+from src.utils.validation import require_finite_array, require_positive_k
 
-DEFAULT_K = 11
-BASE_INTERVAL_MINUTES = 5
 RECONSTRUCTION_TOLERANCE = 1e-12
 
 
@@ -25,31 +37,45 @@ class DecompositionInput:
 
 @dataclass(frozen=True)
 class DecompositionPaths:
-    final_csv: Path = Path("data/final/eurusd_5m_log_returns_final.csv")
-    shuffle_csv: Path = Path("data/baselines/eurusd_5m_log_returns_shuffle.csv")
-    gaussian_csv: Path = Path("data/baselines/eurusd_5m_log_returns_gaussian.csv")
-    output_dir: Path = Path("data/decomposition")
+    final_csv: Path = FINAL_RETURNS_CSV
+    shuffle_csv: Path = SHUFFLE_RETURNS_CSV
+    gaussian_csv: Path = GAUSSIAN_RETURNS_CSV
+    output_dir: Path = DECOMPOSITION_DIR
 
     @property
     def report_json(self) -> Path:
-        return self.output_dir / "decomposition_report.json"
+        return DECOMPOSITION_REPORT_JSON if self.output_dir == DECOMPOSITION_DIR else (
+            self.output_dir / DECOMPOSITION_REPORT_JSON.name
+        )
 
     def inputs(self) -> list[DecompositionInput]:
         return [
             DecompositionInput(
-                name="final",
+                name=SERIES_FINAL,
                 input_csv=self.final_csv,
-                output_csv=self.output_dir / "final_decomposition.csv",
+                output_csv=(
+                    FINAL_DECOMPOSITION_CSV
+                    if self.output_dir == DECOMPOSITION_DIR
+                    else self.output_dir / FINAL_DECOMPOSITION_CSV.name
+                ),
             ),
             DecompositionInput(
-                name="shuffle",
+                name=SERIES_SHUFFLE,
                 input_csv=self.shuffle_csv,
-                output_csv=self.output_dir / "shuffle_decomposition.csv",
+                output_csv=(
+                    SHUFFLE_DECOMPOSITION_CSV
+                    if self.output_dir == DECOMPOSITION_DIR
+                    else self.output_dir / SHUFFLE_DECOMPOSITION_CSV.name
+                ),
             ),
             DecompositionInput(
-                name="gaussian",
+                name=SERIES_GAUSSIAN,
                 input_csv=self.gaussian_csv,
-                output_csv=self.output_dir / "gaussian_decomposition.csv",
+                output_csv=(
+                    GAUSSIAN_DECOMPOSITION_CSV
+                    if self.output_dir == DECOMPOSITION_DIR
+                    else self.output_dir / GAUSSIAN_DECOMPOSITION_CSV.name
+                ),
             ),
         ]
 
@@ -59,8 +85,7 @@ def run_decomposition(
     k: int = DEFAULT_K,
 ) -> dict[str, Any]:
     paths = paths or DecompositionPaths()
-    if k < 1:
-        raise ValueError("k must be at least 1")
+    require_positive_k(k)
 
     paths.output_dir.mkdir(parents=True, exist_ok=True)
     report: dict[str, Any] = {
@@ -76,20 +101,19 @@ def run_decomposition(
     for item in paths.inputs():
         report["series"][item.name] = decompose_csv(item, k=k)
 
-    paths.report_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    write_json(paths.report_json, report)
     return report
 
 
 def decompose_csv(item: DecompositionInput, k: int) -> dict[str, Any]:
-    frame = pd.read_csv(item.input_csv, usecols=["timestamp_utc", "log_return"])
+    frame = pd.read_csv(item.input_csv, usecols=[TIMESTAMP_UTC, LOG_RETURN])
     if frame.empty:
         raise ValueError(f"Input dataset is empty: {item.input_csv}")
-    if frame["log_return"].isna().any():
-        raise ValueError(f"Input contains NaN log_return values: {item.input_csv}")
+    if frame[LOG_RETURN].isna().any():
+        raise ValueError(f"Input contains NaN {LOG_RETURN} values: {item.input_csv}")
 
-    values = frame["log_return"].astype(float).to_numpy()
-    if not np.isfinite(values).all():
-        raise ValueError(f"Input contains non-finite log_return values: {item.input_csv}")
+    values = frame[LOG_RETURN].astype(float).to_numpy()
+    require_finite_array(values, f"Input {LOG_RETURN} values in {item.input_csv}")
 
     n = len(values)
     block_size_max = 2**k
@@ -115,8 +139,8 @@ def decompose_csv(item: DecompositionInput, k: int) -> dict[str, Any]:
     output = pd.DataFrame(
         {
             "index": np.arange(n, dtype=np.int64),
-            "timestamp_utc": frame["timestamp_utc"],
-            "original": values,
+            TIMESTAMP_UTC: frame[TIMESTAMP_UTC],
+            ORIGINAL: values,
         }
     )
     for scale, detail in enumerate(details, start=1):
@@ -134,8 +158,8 @@ def decompose_csv(item: DecompositionInput, k: int) -> dict[str, Any]:
         "block_size_max": int(block_size_max),
         "max_scale_minutes": int(BASE_INTERVAL_MINUTES * block_size_max),
         "max_scale_days": BASE_INTERVAL_MINUTES * block_size_max / (60 * 24),
-        "timestamp_start_utc": str(frame["timestamp_utc"].iloc[0]),
-        "timestamp_end_utc": str(frame["timestamp_utc"].iloc[-1]),
+        "timestamp_start_utc": str(frame[TIMESTAMP_UTC].iloc[0]),
+        "timestamp_end_utc": str(frame[TIMESTAMP_UTC].iloc[-1]),
         "max_abs_reconstruction_error": max_abs_error,
         "mean_abs_reconstruction_error": mean_abs_error,
     }

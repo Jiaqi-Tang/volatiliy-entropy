@@ -2,24 +2,24 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
-import numpy as np
 import pandas as pd
 
-
-DEFAULT_K = 11
-BASE_INTERVAL_MINUTES = 5
+from src.globals.columns import LOG_RETURN, PREVIOUS_TIMESTAMP_UTC, TIMESTAMP_UTC
+from src.globals.constants import BASE_INTERVAL_MINUTES, DEFAULT_K
+from src.globals.paths import CLEAN_RETURNS_CSV, FINAL_RETURNS_CSV, TRUNCATION_REPORT_JSON
+from src.utils.json_utils import write_json
+from src.utils.time_utils import iso_or_none
+from src.utils.validation import require_non_negative_k
 
 
 @dataclass(frozen=True)
 class LengthStandardizationPaths:
-    input_csv: Path = Path("data/intermediate/eurusd_5m_log_returns_clean.csv")
-    output_csv: Path = Path("data/final/eurusd_5m_log_returns_final.csv")
-    report_json: Path = Path("data/final/truncation_report.json")
+    input_csv: Path = CLEAN_RETURNS_CSV
+    output_csv: Path = FINAL_RETURNS_CSV
+    report_json: Path = TRUNCATION_REPORT_JSON
 
 
 def standardize_length(
@@ -28,14 +28,13 @@ def standardize_length(
 ) -> dict[str, Any]:
     """Trim clean returns from the end so length is divisible by 2**k."""
     paths = paths or LengthStandardizationPaths()
-    if k < 0:
-        raise ValueError("k must be non-negative")
+    require_non_negative_k(k)
 
-    data = pd.read_csv(paths.input_csv, parse_dates=["timestamp_utc", "previous_timestamp_utc"])
+    data = pd.read_csv(paths.input_csv, parse_dates=[TIMESTAMP_UTC, PREVIOUS_TIMESTAMP_UTC])
     if data.empty:
         raise ValueError(f"Input dataset is empty: {paths.input_csv}")
-    if "log_return" not in data.columns:
-        raise ValueError("Input dataset must contain a log_return column")
+    if LOG_RETURN not in data.columns:
+        raise ValueError(f"Input dataset must contain a {LOG_RETURN} column")
 
     block_size = 2**k
     input_rows = len(data)
@@ -51,7 +50,7 @@ def standardize_length(
     paths.output_csv.parent.mkdir(parents=True, exist_ok=True)
     final.to_csv(paths.output_csv, index=False)
 
-    returns = final["log_return"]
+    returns = final[LOG_RETURN]
     report = {
         "input_csv": str(paths.input_csv),
         "output_csv": str(paths.output_csv),
@@ -63,15 +62,15 @@ def standardize_length(
         "input_rows": int(input_rows),
         "truncated_rows": int(truncated_rows),
         "dropped_tail_rows": int(len(dropped_tail)),
-        "input_start_timestamp_utc": _iso_or_none(data["timestamp_utc"].iloc[0]),
-        "input_end_timestamp_utc": _iso_or_none(data["timestamp_utc"].iloc[-1]),
-        "truncated_start_timestamp_utc": _iso_or_none(final["timestamp_utc"].iloc[0]),
-        "truncated_end_timestamp_utc": _iso_or_none(final["timestamp_utc"].iloc[-1]),
-        "dropped_tail_start_timestamp_utc": _iso_or_none(
-            dropped_tail["timestamp_utc"].iloc[0] if not dropped_tail.empty else None
+        "input_start_timestamp_utc": iso_or_none(data[TIMESTAMP_UTC].iloc[0]),
+        "input_end_timestamp_utc": iso_or_none(data[TIMESTAMP_UTC].iloc[-1]),
+        "truncated_start_timestamp_utc": iso_or_none(final[TIMESTAMP_UTC].iloc[0]),
+        "truncated_end_timestamp_utc": iso_or_none(final[TIMESTAMP_UTC].iloc[-1]),
+        "dropped_tail_start_timestamp_utc": iso_or_none(
+            dropped_tail[TIMESTAMP_UTC].iloc[0] if not dropped_tail.empty else None
         ),
-        "dropped_tail_end_timestamp_utc": _iso_or_none(
-            dropped_tail["timestamp_utc"].iloc[-1] if not dropped_tail.empty else None
+        "dropped_tail_end_timestamp_utc": iso_or_none(
+            dropped_tail[TIMESTAMP_UTC].iloc[-1] if not dropped_tail.empty else None
         ),
         "mean_log_return": float(returns.mean()),
         "variance_log_return": float(returns.var(ddof=0)),
@@ -83,15 +82,5 @@ def standardize_length(
         "kurtosis_log_return": float(returns.kurt()),
     }
 
-    paths.report_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    write_json(paths.report_json, report)
     return report
-
-
-def _iso_or_none(value: Any) -> str | None:
-    if value is None or pd.isna(value):
-        return None
-    if isinstance(value, pd.Timestamp):
-        return value.isoformat()
-    if isinstance(value, np.datetime64):
-        return pd.Timestamp(value).isoformat()
-    return str(value)

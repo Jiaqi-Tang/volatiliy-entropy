@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -16,13 +15,25 @@ from src.scale_utils import (
     component_type,
     decomposition_components,
 )
-
-
-DEFAULT_K = 11
-BASE_INTERVAL_MINUTES = 5
-TRADING_DAYS_PER_YEAR = 252
-TRADING_HOURS_PER_DAY = 24
-PERIODS_PER_HOUR = 12
+from src.globals.columns import COMPONENT_TYPE, ORIGINAL, SERIES
+from src.globals.constants import (
+    BASE_INTERVAL_MINUTES,
+    DEFAULT_K,
+    PERIODS_PER_HOUR,
+    TRADING_DAYS_PER_YEAR,
+    TRADING_HOURS_PER_DAY,
+)
+from src.globals.paths import (
+    FINAL_DECOMPOSITION_CSV,
+    GAUSSIAN_DECOMPOSITION_CSV,
+    SHUFFLE_DECOMPOSITION_CSV,
+    VOLATILITY_CSV,
+    VOLATILITY_REPORT_JSON,
+    VOLATILITY_RESULTS_DIR,
+)
+from src.globals.series import SERIES_FINAL, SERIES_GAUSSIAN, SERIES_SHUFFLE
+from src.utils.json_utils import write_json
+from src.utils.validation import require_finite_array, require_positive_k
 
 
 @dataclass(frozen=True)
@@ -33,24 +44,28 @@ class VolatilityInput:
 
 @dataclass(frozen=True)
 class VolatilityPaths:
-    final_decomposition_csv: Path = Path("data/decomposition/final_decomposition.csv")
-    shuffle_decomposition_csv: Path = Path("data/decomposition/shuffle_decomposition.csv")
-    gaussian_decomposition_csv: Path = Path("data/decomposition/gaussian_decomposition.csv")
-    output_dir: Path = Path("results/volatility")
+    final_decomposition_csv: Path = FINAL_DECOMPOSITION_CSV
+    shuffle_decomposition_csv: Path = SHUFFLE_DECOMPOSITION_CSV
+    gaussian_decomposition_csv: Path = GAUSSIAN_DECOMPOSITION_CSV
+    output_dir: Path = VOLATILITY_RESULTS_DIR
 
     @property
     def output_csv(self) -> Path:
-        return self.output_dir / "layer_volatility.csv"
+        return VOLATILITY_CSV if self.output_dir == VOLATILITY_RESULTS_DIR else (
+            self.output_dir / VOLATILITY_CSV.name
+        )
 
     @property
     def report_json(self) -> Path:
-        return self.output_dir / "volatility_report.json"
+        return VOLATILITY_REPORT_JSON if self.output_dir == VOLATILITY_RESULTS_DIR else (
+            self.output_dir / VOLATILITY_REPORT_JSON.name
+        )
 
     def inputs(self) -> list[VolatilityInput]:
         return [
-            VolatilityInput("final", self.final_decomposition_csv),
-            VolatilityInput("shuffle", self.shuffle_decomposition_csv),
-            VolatilityInput("gaussian", self.gaussian_decomposition_csv),
+            VolatilityInput(SERIES_FINAL, self.final_decomposition_csv),
+            VolatilityInput(SERIES_SHUFFLE, self.shuffle_decomposition_csv),
+            VolatilityInput(SERIES_GAUSSIAN, self.gaussian_decomposition_csv),
         ]
 
 
@@ -59,8 +74,7 @@ def compute_volatility_metrics(
     k: int = DEFAULT_K,
 ) -> dict[str, Any]:
     paths = paths or VolatilityPaths()
-    if k < 1:
-        raise ValueError("k must be at least 1")
+    require_positive_k(k)
 
     paths.output_dir.mkdir(parents=True, exist_ok=True)
     annualization_periods = (
@@ -95,7 +109,7 @@ def compute_volatility_metrics(
         "output_csv": str(paths.output_csv),
         "series": series_report,
     }
-    paths.report_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    write_json(paths.report_json, report)
     return report
 
 
@@ -105,15 +119,14 @@ def _compute_series_metrics(
     annualization_factor: float,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     components = decomposition_components(k, include_original=False)
-    columns = ["original", *components]
+    columns = [ORIGINAL, *components]
     frame = pd.read_csv(item.decomposition_csv, usecols=columns)
     if frame.empty:
         raise ValueError(f"Decomposition file is empty: {item.decomposition_csv}")
 
     n = len(frame)
-    original = frame["original"].astype(float).to_numpy()
-    if not np.isfinite(original).all():
-        raise ValueError(f"Original series has non-finite values: {item.decomposition_csv}")
+    original = frame[ORIGINAL].astype(float).to_numpy()
+    require_finite_array(original, f"Original series in {item.decomposition_csv}")
 
     component_metrics = []
     detail_energies: dict[str, float] = {}
@@ -122,10 +135,7 @@ def _compute_series_metrics(
 
     for component in components:
         values = frame[component].astype(float).to_numpy()
-        if not np.isfinite(values).all():
-            raise ValueError(
-                f"Component {component} has non-finite values: {item.decomposition_csv}"
-            )
+        require_finite_array(values, f"Component {component} in {item.decomposition_csv}")
 
         energy = float(np.dot(values, values))
         mean = float(np.mean(values))
@@ -134,10 +144,10 @@ def _compute_series_metrics(
         scale = component_scale(component)
         scale_minutes = component_scale_minutes(component, BASE_INTERVAL_MINUTES)
         metrics = {
-            "series": item.name,
+            SERIES: item.name,
             "component": component,
             "k": scale,
-            "component_type": kind,
+            COMPONENT_TYPE: kind,
             "scale_minutes": scale_minutes,
             "scale_days": scale_minutes / (60 * 24),
             "energy": energy,
@@ -161,7 +171,7 @@ def _compute_series_metrics(
 
     for metrics in component_metrics:
         component = metrics["component"]
-        if metrics["component_type"] == "detail":
+        if metrics[COMPONENT_TYPE] == "detail":
             metrics["detail_energy_share"] = (
                 component_energies[component] / detail_energy_sum
             )
@@ -183,7 +193,7 @@ def _compute_series_metrics(
             sum(
                 row["detail_energy_share"]
                 for row in component_metrics
-                if row["component_type"] == "detail"
+                if row[COMPONENT_TYPE] == "detail"
             )
         ),
         "total_component_energy_share_sum": float(

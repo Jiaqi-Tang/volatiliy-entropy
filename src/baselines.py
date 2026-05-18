@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,27 +9,40 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-
-SHUFFLE_SEED = 137
-GAUSSIAN_SEED = 271
+from src.globals.columns import LOG_RETURN, TIMESTAMP_UTC
+from src.globals.constants import GAUSSIAN_SEED, SHUFFLE_SEED
+from src.globals.paths import (
+    BASELINES_DIR,
+    BASELINES_REPORT_JSON,
+    FINAL_RETURNS_CSV,
+    GAUSSIAN_RETURNS_CSV,
+    SHUFFLE_RETURNS_CSV,
+)
+from src.utils.json_utils import write_json
 
 
 @dataclass(frozen=True)
 class BaselinePaths:
-    input_csv: Path = Path("data/final/eurusd_5m_log_returns_final.csv")
-    output_dir: Path = Path("data/baselines")
+    input_csv: Path = FINAL_RETURNS_CSV
+    output_dir: Path = BASELINES_DIR
 
     @property
     def shuffle_csv(self) -> Path:
-        return self.output_dir / "eurusd_5m_log_returns_shuffle.csv"
+        return SHUFFLE_RETURNS_CSV if self.output_dir == BASELINES_DIR else (
+            self.output_dir / SHUFFLE_RETURNS_CSV.name
+        )
 
     @property
     def gaussian_csv(self) -> Path:
-        return self.output_dir / "eurusd_5m_log_returns_gaussian.csv"
+        return GAUSSIAN_RETURNS_CSV if self.output_dir == BASELINES_DIR else (
+            self.output_dir / GAUSSIAN_RETURNS_CSV.name
+        )
 
     @property
     def report_json(self) -> Path:
-        return self.output_dir / "baselines_report.json"
+        return BASELINES_REPORT_JSON if self.output_dir == BASELINES_DIR else (
+            self.output_dir / BASELINES_REPORT_JSON.name
+        )
 
 
 def create_baselines(
@@ -39,12 +51,12 @@ def create_baselines(
     gaussian_seed: int = GAUSSIAN_SEED,
 ) -> dict[str, Any]:
     paths = paths or BaselinePaths()
-    data = pd.read_csv(paths.input_csv, usecols=["timestamp_utc", "log_return"])
+    data = pd.read_csv(paths.input_csv, usecols=[TIMESTAMP_UTC, LOG_RETURN])
     if data.empty:
         raise ValueError(f"Input dataset is empty: {paths.input_csv}")
 
-    timestamps = data["timestamp_utc"].copy()
-    returns = data["log_return"].astype(float).to_numpy()
+    timestamps = data[TIMESTAMP_UTC].copy()
+    returns = data[LOG_RETURN].astype(float).to_numpy()
     empirical_mean = float(np.mean(returns))
     empirical_variance = float(np.var(returns, ddof=0))
     empirical_std = float(np.sqrt(empirical_variance))
@@ -61,10 +73,10 @@ def create_baselines(
 
     paths.output_dir.mkdir(parents=True, exist_ok=True)
     shuffle_frame = pd.DataFrame(
-        {"timestamp_utc": timestamps, "log_return": shuffled_returns}
+        {TIMESTAMP_UTC: timestamps, LOG_RETURN: shuffled_returns}
     )
     gaussian_frame = pd.DataFrame(
-        {"timestamp_utc": timestamps, "log_return": gaussian_returns}
+        {TIMESTAMP_UTC: timestamps, LOG_RETURN: gaussian_returns}
     )
     shuffle_frame.to_csv(paths.shuffle_csv, index=False)
     gaussian_frame.to_csv(paths.gaussian_csv, index=False)
@@ -104,5 +116,5 @@ def create_baselines(
             "max_log_return": float(np.max(gaussian_returns)),
         },
     }
-    paths.report_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    write_json(paths.report_json, report)
     return report

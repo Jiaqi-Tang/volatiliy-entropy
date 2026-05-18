@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import itertools
-import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,10 +20,26 @@ from src.scale_utils import (
     compress_component,
     decomposition_components,
 )
+from src.globals.columns import COMPONENT, COMPONENT_TYPE, SERIES
+from src.globals.constants import BASE_INTERVAL_MINUTES, DEFAULT_K
+from src.globals.paths import (
+    ENTROPY_GAPS_CSV,
+    ENTROPY_REPORT_JSON,
+    ENTROPY_RESULTS_DIR,
+    FINAL_DECOMPOSITION_CSV,
+    GAUSSIAN_DECOMPOSITION_CSV,
+    LAYER_ENTROPY_CSV,
+    SHUFFLE_DECOMPOSITION_CSV,
+)
+from src.globals.series import (
+    SERIES_FINAL,
+    SERIES_GAUSSIAN,
+    SERIES_ORDER,
+    SERIES_SHUFFLE,
+)
+from src.utils.json_utils import write_json
+from src.utils.validation import require_finite_array, require_positive_k
 
-
-DEFAULT_K = 11
-BASE_INTERVAL_MINUTES = 5
 EMBEDDING_DIMENSION = 3
 DELAY = 1
 JITTER_SEED = 314
@@ -39,28 +54,34 @@ class EntropyInput:
 
 @dataclass(frozen=True)
 class EntropyPaths:
-    final_decomposition_csv: Path = Path("data/decomposition/final_decomposition.csv")
-    shuffle_decomposition_csv: Path = Path("data/decomposition/shuffle_decomposition.csv")
-    gaussian_decomposition_csv: Path = Path("data/decomposition/gaussian_decomposition.csv")
-    output_dir: Path = Path("results/entropy")
+    final_decomposition_csv: Path = FINAL_DECOMPOSITION_CSV
+    shuffle_decomposition_csv: Path = SHUFFLE_DECOMPOSITION_CSV
+    gaussian_decomposition_csv: Path = GAUSSIAN_DECOMPOSITION_CSV
+    output_dir: Path = ENTROPY_RESULTS_DIR
 
     @property
     def layer_entropy_csv(self) -> Path:
-        return self.output_dir / "layer_entropy.csv"
+        return LAYER_ENTROPY_CSV if self.output_dir == ENTROPY_RESULTS_DIR else (
+            self.output_dir / LAYER_ENTROPY_CSV.name
+        )
 
     @property
     def entropy_gaps_csv(self) -> Path:
-        return self.output_dir / "entropy_gaps.csv"
+        return ENTROPY_GAPS_CSV if self.output_dir == ENTROPY_RESULTS_DIR else (
+            self.output_dir / ENTROPY_GAPS_CSV.name
+        )
 
     @property
     def report_json(self) -> Path:
-        return self.output_dir / "entropy_report.json"
+        return ENTROPY_REPORT_JSON if self.output_dir == ENTROPY_RESULTS_DIR else (
+            self.output_dir / ENTROPY_REPORT_JSON.name
+        )
 
     def inputs(self) -> list[EntropyInput]:
         return [
-            EntropyInput("final", self.final_decomposition_csv),
-            EntropyInput("shuffle", self.shuffle_decomposition_csv),
-            EntropyInput("gaussian", self.gaussian_decomposition_csv),
+            EntropyInput(SERIES_FINAL, self.final_decomposition_csv),
+            EntropyInput(SERIES_SHUFFLE, self.shuffle_decomposition_csv),
+            EntropyInput(SERIES_GAUSSIAN, self.gaussian_decomposition_csv),
         ]
 
 
@@ -73,8 +94,7 @@ def compute_entropy_metrics(
     jitter_magnitude: float = JITTER_MAGNITUDE,
 ) -> dict[str, Any]:
     paths = paths or EntropyPaths()
-    if k < 1:
-        raise ValueError("k must be at least 1")
+    require_positive_k(k)
     if embedding_dimension < 2:
         raise ValueError("embedding_dimension must be at least 2")
     if delay < 1:
@@ -124,7 +144,7 @@ def compute_entropy_metrics(
         "series": series_report,
         "pattern_counts": pattern_counts,
     }
-    paths.report_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    write_json(paths.report_json, report)
     return report
 
 
@@ -147,10 +167,7 @@ def _compute_series_entropy(
 
     for component in components:
         values = frame[component].astype(float).to_numpy()
-        if not np.isfinite(values).all():
-            raise ValueError(
-                f"Component {component} has non-finite values: {item.decomposition_csv}"
-            )
+        require_finite_array(values, f"Component {component} in {item.decomposition_csv}")
 
         compressed = compress_component(values, component)
         if len(compressed) < embedding_dimension:
@@ -168,10 +185,10 @@ def _compute_series_entropy(
         kind = component_type(component)
         rows.append(
             {
-                "series": item.name,
-                "component": component,
+                SERIES: item.name,
+                COMPONENT: component,
                 "k": scale,
-                "component_type": kind,
+                COMPONENT_TYPE: kind,
                 "scale_minutes": scale_minutes,
                 "scale_days": scale_minutes / (60 * 24),
                 "repeat_length": repeat_length,
@@ -232,9 +249,9 @@ def _permutation_entropy(
 
 def _compute_entropy_gaps(layer_entropy: pd.DataFrame) -> pd.DataFrame:
     index_columns = [
-        "component",
+        COMPONENT,
         "k",
-        "component_type",
+        COMPONENT_TYPE,
         "scale_minutes",
         "scale_days",
         "repeat_length",
@@ -245,16 +262,16 @@ def _compute_entropy_gaps(layer_entropy: pd.DataFrame) -> pd.DataFrame:
         values="normalized_entropy",
         aggfunc="first",
     ).reset_index()
-    required_series = ["final", "shuffle", "gaussian"]
+    required_series = list(SERIES_ORDER)
     missing_series = [series for series in required_series if series not in wide.columns]
     if missing_series:
         raise ValueError(f"Missing entropy series for gap calculation: {missing_series}")
 
     wide = wide.rename(
         columns={
-            "final": "final_normalized_entropy",
-            "shuffle": "shuffle_normalized_entropy",
-            "gaussian": "gaussian_normalized_entropy",
+            SERIES_FINAL: "final_normalized_entropy",
+            SERIES_SHUFFLE: "shuffle_normalized_entropy",
+            SERIES_GAUSSIAN: "gaussian_normalized_entropy",
         }
     )
     wide["entropy_gap_shuffle"] = (

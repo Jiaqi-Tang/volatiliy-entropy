@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import re
-from typing import Literal
 
 import numpy as np
 
-
-ComponentType = Literal["detail", "approximation", "original"]
+from src.globals.constants import BASE_INTERVAL_MINUTES
+from src.globals.types import ComponentType
 
 
 def component_type(component: str) -> ComponentType:
@@ -51,7 +50,7 @@ def original_lags_from_compressed_lags(
 
 def component_scale_minutes(
     component: str,
-    base_interval_minutes: int = 5,
+    base_interval_minutes: int = BASE_INTERVAL_MINUTES,
 ) -> int:
     scale = component_scale(component)
     if scale == 0:
